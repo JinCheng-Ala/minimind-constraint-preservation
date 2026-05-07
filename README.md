@@ -508,6 +508,35 @@ digit_len1024
 result_all_attention_fix/block_keep4/
 ```
 
+### 9.3 YaRN + Attention Block 组合评测
+
+评测脚本仍然使用 [scripts/eval_calc_dataset.py](scripts/eval_calc_dataset.py)，同时打开：
+
+- `--inference_rope_scaling`
+- `--targeted_attention_mode block`
+- `--attention_keep_prefix 4`
+
+示例：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/eval_calc_dataset.py \
+  --weight full_sft_calc \
+  --data_path ./dataset/sft_calc_addition_test_digit_noise_len256_seed42.jsonl \
+  --match_mode answer_only \
+  --device cuda:0 \
+  --inference_rope_scaling \
+  --yarn_original_max_position_embeddings 768 \
+  --targeted_attention_mode block \
+  --attention_keep_prefix 4 \
+  --results_path ./result_all_attention_fix/yarn_block_keep4/digit_len256.jsonl
+```
+
+当前完整 9 组组合结果保存在：
+
+```text
+result_all_attention_fix/yarn_block_keep4/
+```
+
 ---
 
 ## 10. 结果汇总
@@ -553,6 +582,92 @@ digit_len1024  | acc=454/1000=45.4000%
 python scripts/read_result_all_acc.py \
   --root ./result_all
 ```
+
+### 10.4 当前 YaRN + attention block keep4 结果
+
+当前 `result_all_attention_fix/yarn_block_keep4/` 中保存的结果为：
+
+```text
+clean          | acc=729/1000=72.9000%
+alpha_len16    | acc=655/1000=65.5000%
+digit_len16    | acc=648/1000=64.8000%
+alpha_len64    | acc=621/1000=62.1000%
+digit_len64    | acc=627/1000=62.7000%
+alpha_len256   | acc=571/1000=57.1000%
+digit_len256   | acc=576/1000=57.6000%
+alpha_len1024  | acc=437/1000=43.7000%
+digit_len1024  | acc=421/1000=42.1000%
+```
+
+### 10.5 当前四组方法对比结论
+
+当前已经完成四组可直接对比的方法：
+
+- `baseline`
+- `yarn_orig768`
+- `block_keep4`
+- `yarn_block_keep4`
+
+从结果看：
+
+- `yarn_block_keep4` 明显优于纯 `yarn_orig768`，说明 attention block 是主要有效因素。
+- 但 `yarn_block_keep4` 没有稳定超过纯 `block_keep4`。
+- 在 `alpha_len256`、`digit_len256`、`alpha_len1024` 上，组合方法和纯 block 非常接近，个别点略高。
+- 在 `clean`、`alpha_len16`、`digit_len16`、`digit_len64`、`digit_len1024` 上，纯 `block_keep4` 更好。
+
+这说明在当前 `<calc>` 约束保持任务中，问题更像是注意力被长前缀噪声干扰，而不是单纯的位置编码外推不足。
+
+### 10.6 YaRN factor sweep
+
+为了检查 YaRN 失败是否主要来自外推强度过大，额外比较了：
+
+- `yarn_orig768_factor2`
+- `yarn_orig768_factor4`
+- `yarn_orig768_factor8`
+- 原始配置 `yarn_orig768`（即 `factor=16`）
+
+结果如下：
+
+```text
+method               | clean | a16  | d16  | a64  | d64  | a256 | d256 | a1024 | d1024
+yarn_orig768_factor2 | 82.3  | 70.0 | 55.4 | 48.3 | 31.3 | 24.2 | 10.1 | 1.3   | 0.0
+yarn_orig768_factor4 | 77.1  | 63.1 | 50.6 | 38.9 | 23.7 | 15.3 | 5.6  | 0.2   | 0.0
+yarn_orig768_factor8 | 74.8  | 57.2 | 46.2 | 34.7 | 20.6 | 10.5 | 3.3  | 0.0   | 0.0
+yarn_orig768         | 72.5  | 54.8 | 43.8 | 31.6 | 18.2 | 8.1  | 2.1  | 0.0   | 0.0
+```
+
+当前结论：
+
+- `factor` 越小，YaRN-only 的表现越好，整体呈现 `2 > 4 > 8 > 16`。
+- 说明此前 YaRN 效果差，确实有一部分原因来自 `factor=16` 过于激进。
+- 但即便将 `factor` 降到 2，YaRN-only 在 `1024` 长度噪声下仍基本失效。
+- 因此这组 sweep 支持同一个判断：位置外推有帮助，但主瓶颈仍然是长噪声对注意力的干扰。
+
+### 10.7 YaRN + attention block factor sweep
+
+进一步在 `yarn_block_keep4` 设定下比较：
+
+- `yarn_block_keep4_factor2`
+- `yarn_block_keep4_factor4`
+- `yarn_block_keep4_factor8`
+- 原始配置 `yarn_block_keep4`（即 `factor=16`）
+
+结果如下：
+
+```text
+method                    | clean | a16  | d16  | a64  | d64  | a256 | d256 | a1024 | d1024
+yarn_block_keep4_factor2  | 82.2  | 78.0 | 77.2 | 70.0 | 71.6 | 53.5 | 56.7 | 44.4  | 46.7
+yarn_block_keep4_factor4  | 77.2  | 71.4 | 70.6 | 67.2 | 68.2 | 54.7 | 58.7 | 42.5  | 43.9
+yarn_block_keep4_factor8  | 74.8  | 68.0 | 68.2 | 64.5 | 64.6 | 56.7 | 58.3 | 41.3  | 43.9
+yarn_block_keep4          | 72.9  | 65.5 | 64.8 | 62.1 | 62.7 | 57.1 | 57.6 | 43.7  | 42.1
+```
+
+当前结论：
+
+- 在 `clean`、`16`、`64` 这些点上，`factor=2` 明显最好，说明组合方法里也存在同样的“外推过强”问题。
+- 到 `256` 时，最优点开始向 `factor=4` 或 `factor=8` 偏移，说明中长噪声区间存在 trade-off。
+- 到 `1024` 时三者差距已经不大，但 `factor=2` 在 `digit_len1024` 上最好，`factor=4/8` 在 `alpha_len1024` 上略低。
+- 如果需要给 `YaRN + block_keep4` 选一个当前最稳的默认配置，`orig=768, factor=2` 是最合理的起点。
 
 ---
 
